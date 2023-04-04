@@ -103,15 +103,12 @@ impl Record {
 // https://www.mit.edu/~yandros/doc/specs/fcgi-spec.html#S3.4
 pub struct KeyValuePair {
     name: String,
-    value: String
+    value: String,
 }
 
 impl KeyValuePair {
     pub fn new(name: String, value: String) -> KeyValuePair {
-        KeyValuePair {
-            name,
-            value
-        }
+        KeyValuePair { name, value }
     }
 
     pub fn to_vec_u8(&self) -> Result<Vec<u8>, String> {
@@ -126,20 +123,19 @@ impl KeyValuePair {
 
         // following code will panic if usize::BITS < 32
         let u32m_usize = usize::try_from(u32::MAX).unwrap();
-        
+
         if name_size > u32m_usize || value_size > u32m_usize {
             return Err(String::from("Name or value size too large"));
         }
 
-
         for i in (0..4).rev() {
-            let offset = 8*i;
+            let offset = 8 * i;
             let mask: usize = 0xFF << offset;
             let name_byte = ((name_size & mask) >> offset).try_into();
             let value_byte = ((value_size & mask) >> offset).try_into();
 
             if value_byte.is_err() || name_byte.is_err() {
-                return Err(String::from("Name or value size decomposition failed"))
+                return Err(String::from("Name or value size decomposition failed"));
             }
 
             name_size_bytes.push(name_byte.unwrap());
@@ -174,13 +170,13 @@ impl KeyValuePair {
 pub enum RoleType {
     Responder = 1,
     Authorizer = 2,
-    Filter = 3
+    Filter = 3,
 }
 
 pub struct BeginRequest {
     role: RoleType,
     flags: u8,
-    reserved: [u8; 5]
+    reserved: [u8; 5],
 }
 
 impl BeginRequest {
@@ -188,7 +184,7 @@ impl BeginRequest {
         BeginRequest {
             role,
             flags,
-            reserved
+            reserved,
         }
     }
 
