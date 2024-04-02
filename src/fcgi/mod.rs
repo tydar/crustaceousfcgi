@@ -1,3 +1,5 @@
+use std::os::unix::net::UnixStream;
+
 #[derive(Debug, Clone, Copy)]
 pub enum RecordType {
     BeginRequest = 1,
@@ -206,5 +208,33 @@ impl BeginRequest {
         output.extend_from_slice(&self.reserved);
 
         Ok(output)
+    }
+}
+
+
+// Meta types
+
+pub struct Server {
+    params: Vec<KeyValuePair>,
+    app: UnixStream,
+}
+
+impl Server {
+    pub fn new(params_raw: Vec<(String, String)>, socket_addr: String) -> Server {
+        let pair_to_kvp = |p: (String, String)| -> KeyValuePair {
+            let (k, v) = p;
+            KeyValuePair::new(k, v)
+        };
+
+        let params: Vec<KeyValuePair> = params_raw
+                .iter().map(|x| pair_to_kvp(x.clone())).collect::<Vec<KeyValuePair>>();
+
+        let mut stream = UnixStream::connect(socket_addr)
+            .expect("Socket connection failed");
+
+        Server {
+            params: params,
+            app: stream
+        }
     }
 }
