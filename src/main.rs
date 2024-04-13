@@ -1,12 +1,9 @@
-use std::io::prelude::*;
-use std::net::Shutdown;
-use std::os::unix::net::UnixStream;
-
 mod fcgi;
 
 fn main() -> std::io::Result<()> {
     // NEXT STEPS:
     // 1) implement serialization of FastCGI key-value pairs for _PARAMS
+    //      DOING THIS by implementing a fcgi::Server type
     // 2) get a minimal php-fpm dockerfile running
     // 3) attempt to manually send a minimal FastCGI request to that server
     // 4) spit out the response in stdout
@@ -15,51 +12,29 @@ fn main() -> std::io::Result<()> {
     // | EndRequest | KeyValue | Other
     // THEN: work on turning incoming HTTP requests into FastCGI requests
 
+    let kvs_for_init: Vec<(String, String)> = vec![
+        ("GATEWAY_INTERFACE".to_string(), "CGI/1.1".to_string()),
+        ("SERVER_ADDR".to_string(), "127.0.0.1".to_string()),
+        ("SERVER_PROTOCOL".to_string(), "HTTP/2.0".to_string()),
+        ("SERVER_SOFTWARE".to_string(), "Crustaceous/trunk".to_string()),
+        ("REQUEST_METHOD".to_string(), "GET".to_string()),
+        ("REMOTE_ADDR".to_string(), "127.0.0.1".to_string()),
+        ("SCRIPT_FILENAME".to_string(), "/var/www/html/index.php".to_string()),
+    ];
+
+    let mut server: fcgi::Server = fcgi::Server::new(
+        kvs_for_init,
+        "/var/run/php/php8.2-fpm.sock".to_string()
+    );
+
     let begin_body = fcgi::BeginRequest::new(fcgi::RoleType::Responder, 0, [0; 5]);
     let begin_bytes = begin_body.to_vec_u8().expect("Serialization failed");
     println!("begin bytes: {:?}", begin_bytes);
     let begin_rec = fcgi::Record::record_from_data(fcgi::RecordType::BeginRequest, begin_bytes, 0)
         .expect("Record creation failed");
 
-    let mut kvs: Vec<fcgi::KeyValuePair> = Vec::new();
-    kvs.push(fcgi::KeyValuePair::new(
-        String::from("GATEWAY_INTERFACE"),
-        String::from("CGI/1.1"),
-    ));
-    kvs.push(fcgi::KeyValuePair::new(
-        String::from("SERVER_ADDR"),
-        String::from("127.0.0.1"),
-    ));
-    kvs.push(fcgi::KeyValuePair::new(
-        String::from("SERVER_PROTOCOL"),
-        String::from("HTTP/2.0"),
-    ));
-    kvs.push(fcgi::KeyValuePair::new(
-        String::from("SERVER_SOFTWARE"),
-        String::from("Crustaceous/trunk"),
-    ));
-    kvs.push(fcgi::KeyValuePair::new(
-        String::from("REQUEST_METHOD"),
-        String::from("GET"),
-    ));
-    kvs.push(fcgi::KeyValuePair::new(
-        String::from("REMOTE_ADDR"),
-        String::from("127.0.0.1"),
-    ));
-    kvs.push(fcgi::KeyValuePair::new(
-        String::from("SCRIPT_FILENAME"),
-        String::from("/var/www/html/index.php"),
-    ));
-    kvs.push(fcgi::KeyValuePair::new(String::from(""), String::from("")));
-
     // Result type definitely allows a better way to do this
-    let mut kv_records: Vec<fcgi::Record> = Vec::new();
-    for kv in kvs {
-        let data = kv.to_vec_u8().expect("KV serialization failed");
-        let rec = fcgi::Record::record_from_data(fcgi::RecordType::Params, data, 0)
-            .expect("Record creation failed");
-        kv_records.push(rec);
-    }
+    let kv_records: Vec<u8> = server.serialize_params();
 
     let stdin_record = fcgi::Record::record_from_data(fcgi::RecordType::Stdin, vec![], 0)
         .expect("record creation failed");
@@ -67,42 +42,17 @@ fn main() -> std::io::Result<()> {
     let mut out: Vec<u8> = Vec::new();
 
     out.extend(begin_rec.to_vec_u8());
-    for kv in kv_records {
-        out.extend(kv.to_vec_u8());
-    }
+
+    out.extend(kv_records);
 
     out.extend(stdin_record.to_vec_u8());
 
-    let mut stream = UnixStream::connect("/var/run/php/php8.2-fpm-fpm-test.sock")?;
-    stream.write_all(&out[..])?;
+    server.send_request(out)?;
 
     let mut res_s = String::new();
 
-    // Found this loop on StackOverflow.
-    // https://stackoverflow.com/questions/74202534/why-am-i-not-getting-the-fcgi-end-request-record
-    loop {
-        let mut hbuf: [u8; 8] = [0; 8];
-        stream.read_exact(&mut hbuf)?;
 
-        if hbuf[1] != fcgi::RecordType::Stdout as u8 && hbuf[1] != fcgi::RecordType::Stderr as u8 {
-            if hbuf[1] == fcgi::RecordType::EndRequest as u8 {
-                println!("End Request record received");
-            } else {
-                println!("Request with type {:?} received", hbuf[1]);
-            }
-            break;
-        }
-
-        let size: usize = ((hbuf[4] as usize) << 8) | hbuf[5] as usize;
-        let mut record_body: Vec<u8> = vec![0; size];
-        stream.read_exact(&mut record_body)?;
-
-        res_s.push_str(&String::from_utf8_lossy(&record_body));
-
-        let padsz: usize = hbuf[6] as usize;
-        let mut pad: Vec<u8> = vec![0; padsz];
-        stream.read_exact(&mut pad);
-    }
+    server.consume_response_to_string(&mut res_s)?;
 
     println!("{}", res_s);
 

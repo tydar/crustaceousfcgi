@@ -1,4 +1,7 @@
 use std::os::unix::net::UnixStream;
+use std::io::Write;
+use std::io::Read;
+use std::io::Error;
 
 #[derive(Debug, Clone, Copy)]
 pub enum RecordType {
@@ -229,12 +232,59 @@ impl Server {
         let params: Vec<KeyValuePair> = params_raw
                 .iter().map(|x| pair_to_kvp(x.clone())).collect::<Vec<KeyValuePair>>();
 
-        let mut stream = UnixStream::connect(socket_addr)
+        let stream = UnixStream::connect(socket_addr)
             .expect("Socket connection failed");
 
         Server {
             params: params,
             app: stream
         }
+    }
+
+    pub fn serialize_params(&self) -> Vec<u8> {
+        let params_slice = &self.params[0..];
+        let mut kv_records: Vec<Vec<u8>> = Vec::new();
+        for kv in params_slice.iter() {
+            let data = kv.to_vec_u8().expect("KV serialization failed");
+            let rec = Record::record_from_data(RecordType::Params, data, 0)
+                .expect("Record creation failed");
+            kv_records.push(rec.to_vec_u8());
+        }
+
+        kv_records.concat()
+    }
+
+    pub fn send_request(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+        self.app.write_all(&bytes[..])
+    }
+
+    pub fn consume_response_to_string(&mut self, response: &mut String) -> Result<(), Error> {
+        // Found this loop on StackOverflow.
+        // https://stackoverflow.com/questions/74202534/why-am-i-not-getting-the-fcgi-end-request-record
+        loop {
+            let mut hbuf: [u8; 8] = [0; 8];
+            self.app.read_exact(&mut hbuf).expect("Failed on read_exact 1");
+
+            if hbuf[1] != RecordType::Stdout as u8 && hbuf[1] != RecordType::Stderr as u8 {
+                if hbuf[1] == RecordType::EndRequest as u8 {
+                    println!("End Request record received");
+                } else {
+                    println!("Request with type {:?} received", hbuf[1]);
+                }
+                break;
+            }
+
+            let size: usize = ((hbuf[4] as usize) << 8) | hbuf[5] as usize;
+            let mut record_body: Vec<u8> = vec![0; size];
+            self.app.read_exact(&mut record_body).expect("Failed on read_exact 2");
+
+            response.push_str(&String::from_utf8_lossy(&record_body));
+
+            let padsz: usize = hbuf[6] as usize;
+            let mut pad: Vec<u8> = vec![0; padsz];
+            self.app.read_exact(&mut pad).expect("Failed on read_exact 3");
+        }
+
+        Ok(())
     }
 }
