@@ -1,4 +1,5 @@
 use std::os::unix::net::UnixStream;
+use std::net::TcpStream;
 use std::io::Write;
 use std::io::Read;
 use std::io::Error;
@@ -217,13 +218,35 @@ impl BeginRequest {
 
 // Meta types
 
-pub struct Server {
-    params: Vec<KeyValuePair>,
-    app: UnixStream,
+enum DownstreamConnection {
+    UnixSocket(UnixStream),
+    TcpSocket(TcpStream)
 }
 
-impl Server {
-    pub fn new(params_raw: Vec<(String, String)>, socket_addr: String) -> Server {
+pub enum ConcreteServer {
+    UnixServer(Server<UnixStream>),
+    TcpServer(Server<TcpStream>)
+}
+
+fn server_from_downstream(params_raw: Vec<(String, String)>, conn: DownstreamConnection) -> ConcreteServer {
+    match conn {
+        DownstreamConnection::UnixSocket(unix_stream) => ConcreteServer::UnixServer(Server::new(params_raw, unix_stream)),
+        DownstreamConnection::TcpSocket(tcp_socket) => ConcreteServer::TcpServer(Server::new(params_raw, tcp_socket))
+    }
+}
+
+pub fn server_from_unix_path(params_raw: Vec<(String, String)>, path: String) -> ConcreteServer {
+    let mut socket: UnixStream = UnixStream::connect(path).expect("Unix socket failed to connect.");
+    server_from_downstream(params_raw, DownstreamConnection::UnixSocket(socket))
+}
+
+pub struct Server<C: Read + Write> {
+    params: Vec<KeyValuePair>,
+    downstream: C,
+}
+
+impl<C: Read + Write> Server<C> {
+    pub fn new(params_raw: Vec<(String, String)>, downstream: C) -> Server<C> {
         let pair_to_kvp = |p: (String, String)| -> KeyValuePair {
             let (k, v) = p;
             KeyValuePair::new(k, v)
@@ -232,12 +255,9 @@ impl Server {
         let params: Vec<KeyValuePair> = params_raw
                 .iter().map(|x| pair_to_kvp(x.clone())).collect::<Vec<KeyValuePair>>();
 
-        let stream = UnixStream::connect(socket_addr)
-            .expect("Socket connection failed");
-
         Server {
             params: params,
-            app: stream
+            downstream: downstream
         }
     }
 
@@ -255,7 +275,7 @@ impl Server {
     }
 
     pub fn send_request(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
-        self.app.write_all(&bytes[..])
+        self.downstream.write_all(&bytes[..])
     }
 
     pub fn consume_response_to_string(&mut self, response: &mut String) -> Result<(), Error> {
@@ -263,7 +283,7 @@ impl Server {
         // https://stackoverflow.com/questions/74202534/why-am-i-not-getting-the-fcgi-end-request-record
         loop {
             let mut hbuf: [u8; 8] = [0; 8];
-            self.app.read_exact(&mut hbuf).expect("Failed on read_exact 1");
+            self.downstream.read_exact(&mut hbuf).expect("Failed on read_exact 1");
 
             if hbuf[1] != RecordType::Stdout as u8 && hbuf[1] != RecordType::Stderr as u8 {
                 if hbuf[1] == RecordType::EndRequest as u8 {
@@ -276,13 +296,13 @@ impl Server {
 
             let size: usize = ((hbuf[4] as usize) << 8) | hbuf[5] as usize;
             let mut record_body: Vec<u8> = vec![0; size];
-            self.app.read_exact(&mut record_body).expect("Failed on read_exact 2");
+            self.downstream.read_exact(&mut record_body).expect("Failed on read_exact 2");
 
             response.push_str(&String::from_utf8_lossy(&record_body));
 
             let padsz: usize = hbuf[6] as usize;
             let mut pad: Vec<u8> = vec![0; padsz];
-            self.app.read_exact(&mut pad).expect("Failed on read_exact 3");
+            self.downstream.read_exact(&mut pad).expect("Failed on read_exact 3");
         }
 
         Ok(())
