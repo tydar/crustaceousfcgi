@@ -1,12 +1,11 @@
 mod fcgi;
+use std::os::unix::net::UnixStream;
 
 fn main() -> std::io::Result<()> {
     // NEXT STEPS:
-    // 1) implement serialization of FastCGI key-value pairs for _PARAMS
-    //      DOING THIS by implementing a fcgi::Server type
-    // 2) get a minimal php-fpm dockerfile running
-    // 3) attempt to manually send a minimal FastCGI request to that server
-    // 4) spit out the response in stdout
+    // 1) get a minimal php-fpm dockerfile running
+    // 2) attempt to manually send a minimal FastCGI request to that server
+    // 3) spit out the response in stdout
     //
     // THEN: refactor so that a request struct is more abstracted; enum for body types BeginRequest
     // | EndRequest | KeyValue | Other
@@ -22,10 +21,13 @@ fn main() -> std::io::Result<()> {
         ("SCRIPT_FILENAME".to_string(), "/var/www/html/index.php".to_string()),
     ];
 
-    let mut server: fcgi::Server = fcgi::Server::new(
+    let mut server: fcgi::Server<UnixStream> = match fcgi::server_from_unix_path(
         kvs_for_init,
         "/var/run/php/php8.2-fpm.sock".to_string()
-    );
+    ) {
+        fcgi::ConcreteServer::UnixServer(s) => s,
+        other => panic!("Got an unexpected server type")
+    };
 
     let begin_body = fcgi::BeginRequest::new(fcgi::RoleType::Responder, 0, [0; 5]);
     let begin_bytes = begin_body.to_vec_u8().expect("Serialization failed");
